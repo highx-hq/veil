@@ -5,6 +5,8 @@
 
 ---
 
+![@veil/devtools](./devtools-demo.png "@veil/devtools")
+
 ## Core Design Principles
 
 | Principle | Description |
