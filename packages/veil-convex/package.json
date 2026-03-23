@@ -1,0 +1,36 @@
+{
+  "name": "@veil/veil-convex",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "exports": {
+    "./convex.config.js": {
+      "types": "./dist/convex/convex.config.d.ts",
+      "default": "./dist/convex/convex.config.js"
+    },
+    "./devtools/http": {
+      "types": "./dist/convex/devtools/http.d.ts",
+      "default": "./dist/convex/devtools/http.js"
+    }
+  },
+  "files": [
+    "dist",
+    "convex"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check-types": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@veil/core": "*",
+    "@veil/llm": "*",
+    "ai": "^5.0.0",
+    "convex": "^1.26.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "*",
+    "@types/node": "^22.15.3",
+    "typescript": "5.9.2"
+  }
+}

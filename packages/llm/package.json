@@ -1,0 +1,29 @@
+{
+  "name": "@veil/llm",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "exports": {
+    "./gemini": {
+      "types": "./dist/gemini.d.ts",
+      "default": "./dist/gemini.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check-types": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^2.0.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "*",
+    "@veil/core": "*",
+    "typescript": "5.9.2"
+  }
+}
+

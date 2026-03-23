@@ -1,0 +1,26 @@
+{
+  "name": "@veil/storage",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "exports": {
+    "./convex": {
+      "types": "./dist/convex.d.ts",
+      "default": "./dist/convex.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check-types": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "*",
+    "@veil/core": "*",
+    "typescript": "5.9.2"
+  }
+}
+

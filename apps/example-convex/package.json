@@ -1,0 +1,29 @@
+{
+  "name": "example-convex",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:convex": "convex dev",
+    "codegen": "convex codegen",
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 5173"
+  },
+  "dependencies": {
+    "@veil/veil-convex": "*",
+    "convex": "^1.33.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "*",
+    "@veil/devtools": "*",
+    "@types/node": "^22.15.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "@vitejs/plugin-react": "^5.0.2",
+    "typescript": "5.9.2",
+    "vite": "^7.1.7"
+  }
+}
