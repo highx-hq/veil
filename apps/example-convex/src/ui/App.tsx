@@ -3,15 +3,28 @@ import { useAction, useMutation, useQuery } from "convex/react";
 
 import { api } from "../../convex/_generated/api";
 
-type Tab = "recommend" | "products";
+type Tab = "recommend" | "products" | "chat";
 
-function getUserId() {
-  const key = "veil_demo_userId";
+function getOrCreateLocalStorageValue(key: string, factory: () => string) {
   const existing = localStorage.getItem(key);
   if (existing) return existing;
-  const next = `user_${Math.random().toString(36).slice(2, 10)}`;
+  const next = factory();
   localStorage.setItem(key, next);
   return next;
+}
+
+function getUserId() {
+  return getOrCreateLocalStorageValue("veil_demo_userId", () => `user_${Math.random().toString(36).slice(2, 10)}`);
+}
+
+function getStoredThreadId(userId: string) {
+  return localStorage.getItem(`veil_demo_thread_${userId}`);
+}
+
+function setStoredThreadId(userId: string, threadId: string | null) {
+  const key = `veil_demo_thread_${userId}`;
+  if (threadId) localStorage.setItem(key, threadId);
+  else localStorage.removeItem(key);
 }
 
 export function App() {
@@ -34,10 +47,15 @@ export function App() {
           <button className="tab" aria-selected={tab === "products"} onClick={() => setTab("products")}>
             Product List
           </button>
+          <button className="tab" aria-selected={tab === "chat"} onClick={() => setTab("chat")}>
+            Chat
+          </button>
         </div>
       </div>
 
-      {tab === "products" ? <ProductsTab /> : <RecommendTab userId={userId} />}
+      {tab === "products" ? <ProductsTab /> : null}
+      {tab === "recommend" ? <RecommendTab userId={userId} /> : null}
+      {tab === "chat" ? <ChatTab userId={userId} /> : null}
     </div>
   );
 }
@@ -108,11 +126,7 @@ function ProductsTab() {
         </div>
         <div className="field" style={{ width: 140 }}>
           <label>Price</label>
-          <input
-            type="number"
-            value={form.price}
-            onChange={(e) => setForm({ ...form, price: Number(e.target.value) })}
-          />
+          <input type="number" value={form.price} onChange={(e) => setForm({ ...form, price: Number(e.target.value) })} />
         </div>
         <div className="field" style={{ width: 140 }}>
           <label>Rating</label>
@@ -195,11 +209,7 @@ function RecommendTab(props: { userId: string }) {
   const [region, setRegion] = useState("BD");
   const [budget, setBudget] = useState(900);
 
-  const recommendations =
-    useQuery(api.recommendations.list, {}) ?? [];
-  
-    console.log(recommendations)
-
+  const recommendations = useQuery(api.recommendations.list, { region, budget, userId: props.userId }) ?? [];
   const runCycle = useAction(api.recommendations.runCycle);
   const record = useMutation(api.components.veil.feedback.record as any);
 
@@ -221,7 +231,7 @@ function RecommendTab(props: { userId: string }) {
         <div>
           <div style={{ fontWeight: 700, marginBottom: 6 }}>Recommendations</div>
           <div className="muted" style={{ fontSize: 13 }}>
-            View/Like/Dislike writes feedback into the Veil component and re-runs the cycle.
+            View/Like/Dislike writes feedback into Veil and re-runs the ranking cycle.
           </div>
         </div>
         <button className="btn primary" onClick={() => runCycle({ userId: props.userId })}>
@@ -272,3 +282,127 @@ function RecommendTab(props: { userId: string }) {
   );
 }
 
+function ChatTab(props: { userId: string }) {
+  const createThread = useAction(api.chat.createThread);
+  const respond = useAction(api.chat.respond);
+  const orders = useQuery(api.chat_tools.listOrders, { userId: props.userId }) ?? [];
+
+  const [threadId, setThreadId] = useState<string | null>(() => getStoredThreadId(props.userId));
+  const [message, setMessage] = useState("");
+  const [status, setStatus] = useState("Ready.");
+
+  const messages = useQuery(api.chat.listMessages, threadId ? { threadId } : ("skip" as any)) ?? [];
+
+  const sendMessage = async () => {
+    const text = message.trim();
+    if (!text) return;
+
+    setStatus("Sending...");
+    let activeThreadId = threadId;
+
+    if (!activeThreadId) {
+      const thread = await createThread({
+        userId: props.userId,
+        title: "Shopping assistant",
+      });
+      activeThreadId = thread.id;
+      setThreadId(activeThreadId);
+      setStoredThreadId(props.userId, activeThreadId);
+    }
+
+    setMessage("");
+    const result = await respond({
+      threadId: activeThreadId,
+      userId: props.userId,
+      message: text,
+    });
+    setStatus(`Last run: ${result.runId}`);
+  };
+
+  const resetThread = () => {
+    setThreadId(null);
+    setStoredThreadId(props.userId, null);
+    setStatus("Ready.");
+  };
+
+  return (
+    <div className="chatLayout">
+      <div className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Snapshot-first Chat</div>
+            <div className="muted" style={{ fontSize: 13 }}>
+              Demo wrapper registers local tools plus a plugin-style commerce tool pack on each request.
+            </div>
+          </div>
+          <div className="row">
+            <button className="btn" onClick={resetThread}>
+              New thread
+            </button>
+          </div>
+        </div>
+
+        <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+          Thread: {threadId ?? "none"} • {status}
+        </div>
+
+        <div className="chatTranscript">
+          {messages.length === 0 ? (
+            <div className="muted">Try asking for recommendations, product details, shipping, or to place an order.</div>
+          ) : (
+            messages.map((entry: any) => (
+              <div className={`chatBubble ${entry.role === "assistant" ? "assistant" : "user"}`} key={entry.id}>
+                <div className="chatRole">{entry.role}</div>
+                <div>{typeof entry.parts === "string" ? entry.parts : JSON.stringify(entry.parts)}</div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="row" style={{ marginTop: 12 }}>
+          <textarea
+            className="chatInput"
+            placeholder="Ask for ideas from the snapshot, or say something like: place an order for the best headphone under 120."
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+          />
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn primary" onClick={sendMessage} disabled={!message.trim()}>
+            Send
+          </button>
+          <button className="btn" onClick={() => setMessage("Show me 3 strong options for travel gear under 150.")}>
+            Prompt: recommendations
+          </button>
+          <button className="btn" onClick={() => setMessage("Give me fresh details for the top ranked item and quote shipping to BD.")}>
+            Prompt: details
+          </button>
+          <button className="btn" onClick={() => setMessage("Place an order for the top item with quantity 1 for user " + props.userId + ".")}>
+            Prompt: order
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>Orders Created By Tools</div>
+        <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+          `place_order` is part of the demo plugin-style tool pack.
+        </div>
+        <div className="list">
+          {orders.map((order: any) => (
+            <div className="card" key={order.orderId} style={{ padding: 12 }}>
+              <div className="itemTitle">{order.orderId}</div>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
+                {order.itemId} • qty {order.quantity} • {order.status}
+              </div>
+              <div>
+                <span className="pill">total:{order.totalPrice}</span>
+                <span className="pill">user:{order.userId}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

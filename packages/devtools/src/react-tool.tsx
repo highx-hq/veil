@@ -34,6 +34,8 @@ import { useDevtoolsClient } from "./runtime/DevtoolsClientContext.js";
 import { usePolling } from "./runtime/usePolling.js";
 import type {
   DevtoolsAdapters,
+  DevtoolsChatStreamEvent,
+  DevtoolsChatThread,
   DevtoolsKvTable,
   DevtoolsPluginMeta,
   DevtoolsSettings,
@@ -97,7 +99,8 @@ interface DatasetEditorRow {
 }
 
 interface ChatMessage {
-  role: "user" | "ai";
+  id?: string;
+  role: "user" | "ai" | "assistant" | "system" | "tool";
   text: string;
 }
 
@@ -461,40 +464,10 @@ const ROWH = 112;
 
 // ─── AI Chat ──────────────────────────────────────────────────────────────────
 
-const AI_REPLIES: Record<string, string> = {
-  softranker:
-    "**SoftRanker** performs a semantic re-rank via your LLM (`gpt-4o`). It receives filtered candidates from HardScorer and scores them for contextual relevance. This is your most expensive step — consider caching or using `gpt-4o-mini` in dev.",
-  features:
-    "Current split: Popularity 35% · Rating 30% · Recency 20% · Price 15%. Popularity dominates — great for trending items but risks burying long-tail products. Try 25/35/25/15 for better diversity.",
-  diagnostics:
-    "✓ All 12 nodes reachable\n✓ Cache hit rate ~67%\n⚠ SoftRanker p95 latency may spike under concurrent load\n→ Recommend model override to `gpt-4o-mini` for simulation runs.",
-  cache:
-    "**SnapshotCache** stores the hard-scored candidate set before the grouping step. It prevents re-running expensive scoring on repeat requests. TTL is controlled by `backgroundRefresh` cron.",
-  default:
-    'I can see your pipeline is configured with 12 nodes and 3 LLM models. Ask me about any node, the feature mix, or type "diagnostics" for a full health check.',
-};
-
-function getAIReply(msg: string): string {
-  const m = msg.toLowerCase();
-  if (m.includes("soft") || m.includes("rank"))
-    return AI_REPLIES.softranker || "";
-  if (m.includes("weight") || m.includes("feature") || m.includes("popular"))
-    return AI_REPLIES.features || "";
-  if (m.includes("diagnos") || m.includes("debug"))
-    return AI_REPLIES.diagnostics || "";
-  if (m.includes("cache") || m.includes("snapshot"))
-    return AI_REPLIES.cache || "";
-  return AI_REPLIES.default || "";
-}
-
 // ─── Utility ──────────────────────────────────────────────────────────────────
 
 function clamp(val: number, min: number, max: number): number {
   return Math.min(Math.max(val, min), max);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 function formatTs(ts: number | undefined): string {
@@ -2722,23 +2695,55 @@ const QUICK_PROMPTS = [
 ];
 
 function ChatPanel() {
+  const client = useDevtoolsClient();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "ai",
-      text: "Hey — I'm your Veil pipeline assistant. Ask me about any node, feature mix, or run diagnostics on your setup.",
-    },
-    {
-      role: "ai",
-      text: "I can see **12 nodes** and 3 LLM models configured. `SoftRanker` is your most expensive step.",
+      text: "Ask about the current snapshot, compare items, or request actions like fetching details and placing demo orders.",
     },
   ]);
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
+  const [showThreads, setShowThreads] = useState(false);
+  const [threads, setThreads] = useState<DevtoolsChatThread[]>([]);
+  const [threadId, setThreadId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem("veil_devtools_thread");
+  });
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const refreshThreads = useCallback(async () => {
+    try {
+      const next = await client.getChatThreads(undefined, 30);
+      setThreads(next);
+    } catch {
+      // Ignore thread list refresh failures in the panel UI.
+    }
+  }, [client]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, typing]);
+
+  useEffect(() => {
+    void refreshThreads();
+  }, [refreshThreads]);
+
+  useEffect(() => {
+    if (!threadId) return;
+    let alive = true;
+    client
+      .getChatMessages(threadId)
+      .then((history) => {
+        if (!alive) return;
+        if (!history.length) return;
+        setMessages(history.filter((entry) => entry.role !== "system").map(normalizeDevtoolsChatMessage));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [client, threadId]);
 
   const send = useCallback(
     async (text?: string) => {
@@ -2747,11 +2752,80 @@ function ChatPanel() {
       setInput("");
       setMessages((m) => [...m, { role: "user", text: t }]);
       setTyping(true);
-      await sleep(650 + Math.random() * 500);
-      setTyping(false);
-      setMessages((m) => [...m, { role: "ai", text: getAIReply(t) }]);
+      const pendingId = `pending_${Date.now()}`;
+      setMessages((m) => [...m, { id: pendingId, role: "ai", text: "" }]);
+      let nextThreadId = threadId;
+
+      try {
+        await client.respondChatStream(
+          {
+            threadId: nextThreadId ?? undefined,
+            title: "Devtools chat",
+            message: t,
+          },
+          {
+            onThread: (resolvedThreadId) => {
+              if (!resolvedThreadId) return;
+              nextThreadId = resolvedThreadId;
+              setThreadId(resolvedThreadId);
+              if (typeof window !== "undefined") {
+                window.localStorage.setItem("veil_devtools_thread", resolvedThreadId);
+              }
+            },
+            onChunk: (chunk) => {
+              setMessages((current) =>
+                current.map((entry) =>
+                  entry.id === pendingId ? { ...entry, text: entry.text + chunk } : entry,
+                ),
+              );
+            },
+            onEvent: (event) => {
+              if (event.type !== "tool-event") return;
+              const toolMessageId = `tool_${event.id}`;
+
+              setMessages((current) => {
+                const toolIndex = current.findIndex((entry) => entry.id === toolMessageId);
+                const existing = toolIndex >= 0 ? current[toolIndex] : null;
+                const nextText = describeToolEvent(event, existing?.text ?? "");
+                if (toolIndex >= 0) {
+                  return current.map((entry, index) =>
+                    index === toolIndex ? { ...entry, role: "tool", text: nextText } : entry,
+                  );
+                }
+                const next = [...current];
+                const pendingIndex = next.findIndex((entry) => entry.id === pendingId);
+                const toolEntry: ChatMessage = { id: toolMessageId, role: "tool", text: nextText };
+                if (pendingIndex >= 0) {
+                  next.splice(pendingIndex, 0, toolEntry);
+                  return next;
+                }
+                return [...next, toolEntry];
+              });
+            },
+          },
+        );
+
+        if (nextThreadId) {
+          const history = await client.getChatMessages(nextThreadId);
+          setMessages(history.filter((entry) => entry.role !== "system").map(normalizeDevtoolsChatMessage));
+        }
+        await refreshThreads();
+      } catch (error) {
+        setMessages((current) =>
+          current.map((entry) =>
+            entry.id === pendingId
+              ? {
+                  ...entry,
+                  text: error instanceof Error ? error.message : "Chat request failed.",
+                }
+              : entry,
+          ),
+        );
+      } finally {
+        setTyping(false);
+      }
     },
-    [input],
+    [client, input, refreshThreads, threadId],
   );
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2760,6 +2834,33 @@ function ChatPanel() {
       send();
     }
   };
+
+  const openThread = useCallback(
+    async (nextThreadId: string) => {
+      setThreadId(nextThreadId);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("veil_devtools_thread", nextThreadId);
+      }
+      const history = await client.getChatMessages(nextThreadId);
+      setMessages(history.length ? history.filter((entry) => entry.role !== "system").map(normalizeDevtoolsChatMessage) : []);
+      setShowThreads(false);
+    },
+    [client],
+  );
+
+  const startNewThread = useCallback(() => {
+    setThreadId(null);
+    setMessages([
+      {
+        role: "ai",
+        text: "New conversation. Ask about the current snapshot, compare items, or request a demo action.",
+      },
+    ]);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("veil_devtools_thread");
+    }
+    setShowThreads(false);
+  }, []);
 
   const ph: CSSProperties = {
     height: 34,
@@ -2792,23 +2893,99 @@ function ChatPanel() {
         >
           Veil AI Assistant
         </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button
+            onClick={() => setShowThreads((v) => !v)}
+            style={{
+              height: 24,
+              padding: "0 8px",
+              borderRadius: 6,
+              border: `1px solid ${C.bdNormal}`,
+              background: showThreads ? C.accentBg : "transparent",
+              color: showThreads ? C.accentLt : C.text2,
+              cursor: "pointer",
+              fontSize: 9,
+              userSelect: "none",
+            }}
+          >
+            Conversations
+          </button>
+          <span style={{ fontSize: 9, color: C.text2, userSelect: "text" }}>
+            {threadId ? `thread ${threadId.slice(0, 8)}` : "new thread"}
+          </span>
+        </div>
       </div>
 
-      {/* Message list */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "10px 10px 4px",
-          scrollbarWidth: "thin",
-          userSelect: "text",
-        }}
-      >
-        {messages.map((m, i) => (
-          <ChatMsg key={i} msg={m} />
-        ))}
-        {typing && <TypingDots />}
-        <div ref={bottomRef} />
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        {showThreads && (
+          <div
+            style={{
+              width: 210,
+              borderRight: `1px solid ${C.bdFaint}`,
+              overflowY: "auto",
+              padding: 8,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <button
+              onClick={startNewThread}
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: `1px solid ${C.accentBd}`,
+                background: C.accentBg,
+                color: C.accentLt,
+                cursor: "pointer",
+                fontSize: 10,
+                textAlign: "left",
+              }}
+            >
+              + New conversation
+            </button>
+            {threads.map((thread) => (
+              <button
+                key={thread.id}
+                onClick={() => void openThread(thread.id)}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: `1px solid ${thread.id === threadId ? C.accentBd : C.bdFaint}`,
+                  background: thread.id === threadId ? C.accentBg : C.bg2,
+                  color: thread.id === threadId ? C.text0 : C.text1,
+                  cursor: "pointer",
+                  textAlign: "left",
+                }}
+              >
+                <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 4 }}>
+                  {thread.title || "Untitled thread"}
+                </div>
+                <div style={{ fontSize: 9, color: C.text2 }}>
+                  {formatTs(thread.updatedAt)}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "10px 10px 4px",
+            scrollbarWidth: "thin",
+            userSelect: "text",
+          }}
+        >
+          {messages.map((m, i) => (
+            <ChatMsg key={m.id ?? i} msg={m} />
+          ))}
+          {typing && <TypingDots />}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
       {/* Quick prompts */}
@@ -2883,8 +3060,75 @@ interface ChatMsgProps {
   msg: ChatMessage;
 }
 
+function normalizeDevtoolsChatMessage(message: {
+  id?: string;
+  role: string;
+  text?: string;
+  parts?: unknown;
+}): ChatMessage {
+  const text = formatChatMessageText(message);
+  return {
+    id: message.id,
+    role: message.role === "assistant" ? "ai" : (message.role as ChatMessage["role"]),
+    text,
+  };
+}
+
+function formatChatMessageText(message: {
+  role: string;
+  text?: string;
+  parts?: unknown;
+  toolName?: string;
+}): string {
+  if (typeof message.text === "string") return message.text;
+  if (typeof message.parts === "string") return message.parts;
+  if (message.role === "tool" && message.parts && typeof message.parts === "object") {
+    const parts = message.parts as Record<string, unknown>;
+    if (parts.type === "tool-call") {
+      return `Calling ${message.toolName ?? "tool"}\n${prettyValue(parts.input)}`;
+    }
+    if (parts.type === "tool-result") {
+      return `Result from ${message.toolName ?? "tool"}\n${prettyValue(parts.output)}`;
+    }
+  }
+  return JSON.stringify(message.parts ?? "");
+}
+
+function describeToolEvent(event: Extract<DevtoolsChatStreamEvent, { type: "tool-event" }>, previous: string): string {
+  if (event.phase === "input-start") {
+    return `Calling ${event.toolName ?? "tool"}...`;
+  }
+  if (event.phase === "input-delta") {
+    return `Calling ${event.toolName ?? "tool"}\n${event.inputText ?? previous}`;
+  }
+  if (event.phase === "call") {
+    return `Calling ${event.toolName ?? "tool"}\n${prettyValue(event.input ?? event.inputText ?? {})}`;
+  }
+  if (event.phase === "result") {
+    return `Result from ${event.toolName ?? "tool"}\n${prettyValue(event.output ?? {})}`;
+  }
+  if (event.phase === "error") {
+    return `Tool error from ${event.toolName ?? "tool"}\n${String(event.error ?? "Unknown error")}`;
+  }
+  return previous;
+}
+
+function prettyValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 function ChatMsg({ msg }: ChatMsgProps) {
   const isUser = msg.role === "user";
+  const isTool = msg.role === "tool";
+  const [expanded, setExpanded] = useState(false);
+  const toolLines = isTool ? msg.text.split("\n") : [];
+  const toolSummary = isTool ? toolLines[0] ?? "Tool Trace" : "";
+  const toolDetails = isTool ? toolLines.slice(1).join("\n").trim() : "";
 
   const renderText = (text: string): ReactNode[] => {
     const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\n)/g);
@@ -2936,12 +3180,18 @@ function ChatMsg({ msg }: ChatMsgProps) {
             gap: 4,
           }}
         >
-          <img
-            src={VeilLogo}
-            alt="Veil"
-            style={{ width: 14, height: 14, borderRadius: "50%" }}
-          />
-          Veil AI
+          {!isTool ? (
+            <>
+              <img
+                src={VeilLogo}
+                alt="Veil"
+                style={{ width: 14, height: 14, borderRadius: "50%" }}
+              />
+              Veil AI
+            </>
+          ) : (
+            <>Tool Trace</>
+          )}
         </div>
       )}
       <div
@@ -2949,15 +3199,46 @@ function ChatMsg({ msg }: ChatMsgProps) {
           maxWidth: "93%",
           padding: "8px 11px",
           borderRadius: isUser ? "8px 8px 2px 8px" : "8px 8px 8px 2px",
-          background: isUser ? C.accent : C.bg3,
-          border: isUser ? "none" : `1px solid ${C.bdFaint}`,
+          background: isUser ? C.accent : isTool ? C.infoBg : C.bg3,
+          border: isUser ? "none" : `1px solid ${isTool ? "rgba(6,182,212,0.22)" : C.bdFaint}`,
           fontSize: 11,
           lineHeight: 1.55,
-          color: isUser ? "white" : C.text1,
+          color: isUser ? "white" : isTool ? C.text0 : C.text1,
           fontFamily: C.mono,
         }}
+        onClick={isTool ? () => setExpanded((v) => !v) : undefined}
       >
-        {renderText(msg.text)}
+        {isTool ? (
+          <div style={{ cursor: "pointer" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <span>{renderText(toolSummary)}</span>
+              <span style={{ fontSize: 10, color: C.info }}>
+                {expanded ? "Hide" : "Show"}
+              </span>
+            </div>
+            {expanded && toolDetails ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  paddingTop: 8,
+                  borderTop: `1px solid rgba(6,182,212,0.18)`,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {renderText(toolDetails)}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          renderText(msg.text)
+        )}
       </div>
     </div>
   );

@@ -132,6 +132,42 @@ export type DevtoolsCycleResult = {
   snapshot?: DevtoolsSnapshotItem[];
 };
 
+export type DevtoolsChatMessage = {
+  id?: string;
+  role: "system" | "user" | "assistant" | "tool" | "ai";
+  parts?: unknown;
+  text?: string;
+  visible?: boolean;
+  createdAt?: number;
+  threadId?: string;
+};
+
+export type DevtoolsChatThread = {
+  id: string;
+  userId?: string;
+  status: "active" | "archived";
+  title?: string;
+  createdAt: number;
+  updatedAt: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type DevtoolsChatStreamEvent =
+  | { type: "meta"; threadId: string; runId: string }
+  | { type: "text-delta"; text: string }
+  | {
+      type: "tool-event";
+      phase: "input-start" | "input-delta" | "call" | "result" | "error";
+      id: string;
+      toolName?: string;
+      inputText?: string;
+      input?: unknown;
+      output?: unknown;
+      error?: unknown;
+    }
+  | { type: "done"; threadId: string; runId: string }
+  | { type: "error"; error: string };
+
 export class DevtoolsClient {
   public readonly options: DevtoolsClientOptions;
 
@@ -223,6 +259,100 @@ export class DevtoolsClient {
     };
     es.onerror = (err) => onError(err);
     return () => es.close();
+  }
+
+  async createChatThread(payload: {
+    userId?: string;
+    title?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<DevtoolsChatThread> {
+    return this.postJson("/api/devtools/chat/thread", payload);
+  }
+
+  async getChatMessages(threadId: string): Promise<DevtoolsChatMessage[]> {
+    const encoded = encodeURIComponent(threadId);
+    return this.getJson(`/api/devtools/chat/messages?threadId=${encoded}`);
+  }
+
+  async getChatThreads(userId?: string, limit = 50): Promise<DevtoolsChatThread[]> {
+    const params = new URLSearchParams();
+    if (userId) params.set("userId", userId);
+    params.set("limit", String(limit));
+    return this.getJson(`/api/devtools/chat/threads?${params.toString()}`);
+  }
+
+  async respondChatStream(
+    payload: {
+      threadId?: string;
+      userId?: string;
+      title?: string;
+      message: string;
+      metadata?: Record<string, unknown>;
+    },
+    handlers: {
+      onThread: (threadId: string, runId: string | null) => void;
+      onChunk: (chunk: string) => void;
+      onEvent?: (event: DevtoolsChatStreamEvent) => void;
+    },
+  ): Promise<void> {
+    const res = await fetch(this.url("/api/devtools/chat/respond"), {
+      method: "POST",
+      headers: { "content-type": "application/json", ...this.authHeaders() },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(body || `${res.status} ${res.statusText}`);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) return;
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      buffer += decoder.decode(value, { stream: true });
+      ({ buffer } = this.consumeChatSseBuffer(buffer, handlers));
+    }
+
+    buffer += decoder.decode();
+    this.consumeChatSseBuffer(buffer, handlers);
+  }
+
+  private consumeChatSseBuffer(
+    buffer: string,
+    handlers: {
+      onThread: (threadId: string, runId: string | null) => void;
+      onChunk: (chunk: string) => void;
+      onEvent?: (event: DevtoolsChatStreamEvent) => void;
+    },
+  ): { buffer: string } {
+    let rest = buffer;
+
+    while (true) {
+      const boundary = rest.indexOf("\n\n");
+      if (boundary === -1) break;
+      const rawEvent = rest.slice(0, boundary);
+      rest = rest.slice(boundary + 2);
+      const dataLine = rawEvent
+        .split("\n")
+        .find((line) => line.startsWith("data: "));
+      if (!dataLine) continue;
+      const payload = dataLine.slice(6);
+      const event = JSON.parse(payload) as DevtoolsChatStreamEvent;
+      if (event.type === "meta") {
+        handlers.onThread(event.threadId, event.runId);
+      }
+      if (event.type === "text-delta") {
+        handlers.onChunk(event.text);
+      }
+      handlers.onEvent?.(event);
+    }
+
+    return { buffer: rest };
   }
 
   private async getJson<T>(path: string): Promise<T> {

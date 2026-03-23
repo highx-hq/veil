@@ -1,4 +1,5 @@
 import type { LLMRoleConfig } from "./config.js";
+import type { VeilChatToolProvider } from "./chat.js";
 import type { VeilItem } from "./item.js";
 import type { StorageAdapter } from "./storage.js";
 import type { UserContext } from "./user.js";
@@ -34,4 +35,5 @@ export type VeilPlugin = {
   id: string;
   version: string;
   collectSignals?: (ctx: PluginSignalContext) => Promise<PluginSignal[]>;
+  chatTools?: VeilChatToolProvider | VeilChatToolProvider[];
 };

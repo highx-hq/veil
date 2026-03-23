@@ -3,6 +3,29 @@ export type { VeilLanguageModel } from "./llm.js";
 export type { StorageAdapter } from "./storage.js";
 export type { QueueAdapter, QueueMessage } from "./queue.js";
 export type { CycleRunOptions } from "./cycle.js";
+export type {
+  ChatRepository,
+  ChatRespondInput,
+  ChatRespondResult,
+  CompleteChatRunInput,
+  CreateChatRunInput,
+  CreateChatThreadInput,
+  FailChatRunInput,
+  ListChatThreadsInput,
+  VeilChatMessage,
+  VeilChatMessageRole,
+  VeilChatRun,
+  VeilChatRunStatus,
+  VeilChatRuntime,
+  VeilChatRuntimeOptions,
+  VeilChatRuntimeContext,
+  VeilChatThread,
+  VeilChatThreadStatus,
+  VeilChatTool,
+  VeilChatToolContext,
+  VeilChatToolPolicy,
+  VeilChatToolProvider,
+} from "./chat.js";
 export type { LearnedConfig, LearnedFeatureSource, LearnedRanker, LinearLearnedFeature, LinearLearnedRankerConfig } from "./learned.js";
 export type {
   PluginFeatureMap,

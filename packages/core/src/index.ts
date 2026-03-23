@@ -4,6 +4,7 @@ export { createLinearLearnedRanker, scoreLearnedSignals } from "./scoring/learne
 export { retrieveCandidates, scoreItemsWithVector } from "./scoring/retrieval.js";
 export { buildPluginSignalSnapshot, collectPluginSignals } from "./scoring/signals.js";
 export { softRank } from "./scoring/soft.js";
+export { createChatRuntime, buildSystemPrompt, resolveChatConfigDefaults, InMemoryChatRepository, createChatId, readTextStream, normalizeChatTools, resolveChatTools } from "./chat/index.js";
 export {
   createBehaviorSignalPlugin,
   createFieldSignalPlugin,
@@ -13,8 +14,16 @@ export {
 export type {
   CandidateRetrievalResult,
   CandidateRetriever,
+  ChatRepository,
+  ChatRespondInput,
+  ChatRespondResult,
   ChatConfig,
+  CompleteChatRunInput,
+  CreateChatRunInput,
+  CreateChatThreadInput,
   CycleRunOptions,
+  FailChatRunInput,
+  ListChatThreadsInput,
   FeatureNormalization,
   FeatureProvider,
   FeatureStats,
@@ -51,6 +60,19 @@ export type {
   VeilPlugin,
   VeilCacheItem,
   VeilChatItem,
+  VeilChatMessage,
+  VeilChatMessageRole,
+  VeilChatRun,
+  VeilChatRunStatus,
+  VeilChatRuntime,
+  VeilChatRuntimeContext,
+  VeilChatRuntimeOptions,
+  VeilChatThread,
+  VeilChatThreadStatus,
+  VeilChatTool,
+  VeilChatToolContext,
+  VeilChatToolPolicy,
+  VeilChatToolProvider,
   VeilConfig,
   VeilFeedback,
   VeilItem,

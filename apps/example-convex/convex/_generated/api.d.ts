@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as chat from "../chat.js";
+import type * as chat_tools from "../chat_tools.js";
 import type * as http from "../http.js";
 import type * as items from "../items.js";
 import type * as products from "../products.js";
@@ -21,6 +23,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  chat: typeof chat;
+  chat_tools: typeof chat_tools;
   http: typeof http;
   items: typeof items;
   products: typeof products;
@@ -80,10 +84,123 @@ export declare const components: {
       >;
     };
     chat: {
+      createThread: FunctionReference<
+        "action",
+        "internal",
+        { metadata?: any; title?: string; userId?: string },
+        any
+      >;
+      listMessages: FunctionReference<
+        "query",
+        "internal",
+        { threadId: string },
+        any
+      >;
+      listThreads: FunctionReference<
+        "query",
+        "internal",
+        { limit?: number; userId?: string },
+        any
+      >;
       respond: FunctionReference<
         "action",
         "internal",
-        { geminiApiKey: string; messages: Array<any>; model?: string },
+        {
+          geminiApiKey: string;
+          maxSnapshotItems?: number;
+          message: string;
+          metadata?: any;
+          model?: string;
+          platformContext?: any;
+          snapshotKey?: string;
+          systemPrompt?: string;
+          threadId: string;
+          toolPolicy?: "snapshot-first" | "tool-heavy" | "snapshot-only";
+          tools?: Array<{
+            description: string;
+            handler: string;
+            inputSchema: any;
+            kind: "query" | "mutation" | "action";
+            name: string;
+          }>;
+          userId?: string;
+        },
+        any
+      >;
+    };
+    chat_messages: {
+      append: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          messages: Array<{
+            createdAt: number;
+            id: string;
+            parts: any;
+            role: "system" | "user" | "assistant" | "tool";
+            runId?: string | null;
+            threadId: string;
+            toolName?: string | null;
+            visible: boolean;
+          }>;
+        },
+        any
+      >;
+      listByThread: FunctionReference<
+        "query",
+        "internal",
+        { threadId: string },
+        any
+      >;
+    };
+    chat_runs: {
+      complete: FunctionReference<
+        "mutation",
+        "internal",
+        { metadata?: any | null; runId: string },
+        any
+      >;
+      create: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          metadata?: any | null;
+          snapshotKey: string;
+          snapshotVersion?: string | null;
+          threadId: string;
+          toolPolicy: "snapshot-first" | "tool-heavy" | "snapshot-only";
+        },
+        any
+      >;
+      fail: FunctionReference<
+        "mutation",
+        "internal",
+        { metadata?: any | null; runId: string },
+        any
+      >;
+    };
+    chat_threads: {
+      create: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          metadata?: any | null;
+          title?: string | null;
+          userId?: string | null;
+        },
+        any
+      >;
+      get: FunctionReference<"query", "internal", { threadId: string }, any>;
+      list: FunctionReference<
+        "query",
+        "internal",
+        { limit?: number; userId?: string | null },
+        any
+      >;
+      touch: FunctionReference<
+        "mutation",
+        "internal",
+        { threadId: string; updatedAt: number },
         any
       >;
     };

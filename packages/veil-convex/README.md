@@ -24,7 +24,9 @@ Then run `bunx convex dev` (or `bunx convex codegen`) to generate `components`.
 
 - `components.veil.cycle.run({ items, geminiApiKey, config, userId?, feedbackLimit? })` (action)
 - `components.veil.recommend.get({ limit, offset, filter })` (query)
-- `components.veil.chat.respond({ messages, geminiApiKey, model })` (action)
+- `components.veil.chat.createThread({ userId?, title?, metadata? })` (action)
+- `components.veil.chat.listMessages({ threadId })` (action)
+- `components.veil.chat.respond({ threadId, message, userId?, metadata?, geminiApiKey, model?, systemPrompt?, platformContext?, snapshotKey?, maxSnapshotItems?, toolPolicy? })` (action)
 - `components.veil.queue.enqueue({ message, delayMs? })` (mutation; backed by `ctx.scheduler`)
 - `components.veil.feedback.record({ userId, itemId, event, score?, meta? })` (mutation)
 - `components.veil.feedback.recent({ userId?, limit? })` (query)

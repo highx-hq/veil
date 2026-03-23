@@ -3,6 +3,7 @@ import type { StorageAdapter } from "./storage.js";
 import type { VeilLanguageModel } from "./llm.js";
 import type { HardConfig } from "./config_recommendation.js";
 import type { ChatConfig } from "./config_chat.js";
+import type { ChatRepository, VeilChatTool, VeilChatToolProvider } from "./chat.js";
 import type { VeilPlugin } from "./plugin.js";
 import type { LearnedConfig } from "./learned.js";
 import type { RetrievalConfig } from "./retrieval.js";
@@ -14,6 +15,9 @@ export type VeilConfig = {
   storage: StorageAdapter;
   queue?: QueueAdapter;
   chat?: ChatConfig;
+  chatTools?: VeilChatTool[];
+  chatToolProviders?: VeilChatToolProvider[];
+  chatRepository?: ChatRepository;
   plugins?: VeilPlugin[];
   retrieval?: RetrievalConfig;
   vector?: VectorAdapter;

@@ -1,7 +1,10 @@
 import { httpRouter } from "convex/server";
 import { httpActionGeneric } from "convex/server";
-import { hardScore, softRank } from "@veil/core";
+import { createChatRuntime, hardScore, readTextStream, softRank } from "@veil/core";
 import { gemini } from "@veil/llm/gemini";
+
+import { createConvexChatRepository, createConvexStorageAdapter } from "../chat_repository.js";
+import { buildConvexTools, type ConvexToolDescriptor } from "../chat_tools_runtime.js";
 
 export type DevtoolsSettings = {
   models: {
@@ -91,6 +94,17 @@ export type CreateDevtoolsHttpRouterOptions = {
     };
   };
   defaultSettings?: DevtoolsSettings | (() => DevtoolsSettings);
+  chat?: {
+    systemPrompt?: string | ((args: { settings: DevtoolsSettings }) => string);
+    platformContext?:
+      | string
+      | Record<string, unknown>
+      | ((args: { settings: DevtoolsSettings }) => string | Record<string, unknown>);
+    toolPolicy?: "snapshot-first" | "tool-heavy" | "snapshot-only";
+    createTools?:
+      | ConvexToolDescriptor[]
+      | ((args: { settings: DevtoolsSettings; req: Request }) => Promise<ConvexToolDescriptor[]> | ConvexToolDescriptor[]);
+  };
 };
 
 const DEFAULT_SETTINGS_KEY = "devtools:settings";
@@ -847,6 +861,30 @@ export function createDevtoolsHttpRouter(opts: CreateDevtoolsHttpRouterOptions) 
   });
 
   http.route({
+    path: "/api/devtools/chat/thread",
+    method: "OPTIONS",
+    handler: optionsHandler,
+  });
+
+  http.route({
+    path: "/api/devtools/chat/messages",
+    method: "OPTIONS",
+    handler: optionsHandler,
+  });
+
+  http.route({
+    path: "/api/devtools/chat/threads",
+    method: "OPTIONS",
+    handler: optionsHandler,
+  });
+
+  http.route({
+    path: "/api/devtools/chat/respond",
+    method: "OPTIONS",
+    handler: optionsHandler,
+  });
+
+  http.route({
     path: "/api/devtools/cycle/run",
     method: "OPTIONS",
     handler: optionsHandler,
@@ -1202,6 +1240,289 @@ export function createDevtoolsHttpRouter(opts: CreateDevtoolsHttpRouterOptions) 
           };
           send({ type: "cycle:end", ts: Date.now(), ok: true });
           controller.close();
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          ...corsHeaders(corsOrigin),
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+        },
+      });
+    }),
+  });
+
+  http.route({
+    path: "/api/devtools/chat/thread",
+    method: "POST",
+    handler: withAuth(async ({ runQuery, runMutation, req }) => {
+      const body = (await req.json().catch(() => ({}))) as {
+        userId?: string;
+        title?: string;
+        metadata?: Record<string, unknown>;
+      };
+      const runtime = createChatRuntime({
+        config: {
+          recommendation: { hard: {} as any, soft: "" },
+          llm: {},
+          storage: createConvexStorageAdapter(
+            { runQuery, runMutation },
+            {
+              get: (opts.component as any)._storage.get,
+              set: (opts.component as any)._storage.set,
+              delete: (opts.component as any)._storage.delete_,
+              list: (opts.component as any)._storage.list,
+            },
+          ),
+          chatRepository: createConvexChatRepository(
+            { runQuery, runMutation },
+            {
+              createThread: (opts.component as any).chat_threads.create,
+              getThread: (opts.component as any).chat_threads.get,
+              appendMessages: (opts.component as any).chat_messages.append,
+              listMessages: (opts.component as any).chat_messages.listByThread,
+              createRun: (opts.component as any).chat_runs.create,
+              completeRun: (opts.component as any).chat_runs.complete,
+              failRun: (opts.component as any).chat_runs.fail,
+            },
+          ),
+          chat: { enabled: false },
+        } as any,
+      });
+
+      const thread = await runtime.createThread({
+        userId: body.userId ?? opts.defaultUserId,
+        title: body.title,
+        metadata: body.metadata,
+      });
+
+      return json(thread, corsOrigin);
+    }),
+  });
+
+  http.route({
+    path: "/api/devtools/chat/messages",
+    method: "GET",
+    handler: withAuth(async ({ runQuery, runMutation, req }) => {
+      const url = new URL(req.url);
+      const threadId = url.searchParams.get("threadId");
+      if (!threadId) return text("Missing threadId", corsOrigin, { status: 400 });
+
+      const runtime = createChatRuntime({
+        config: {
+          recommendation: { hard: {} as any, soft: "" },
+          llm: {},
+          storage: createConvexStorageAdapter(
+            { runQuery, runMutation },
+            {
+              get: (opts.component as any)._storage.get,
+              set: (opts.component as any)._storage.set,
+              delete: (opts.component as any)._storage.delete_,
+              list: (opts.component as any)._storage.list,
+            },
+          ),
+          chatRepository: createConvexChatRepository(
+            { runQuery, runMutation },
+            {
+              createThread: (opts.component as any).chat_threads.create,
+              getThread: (opts.component as any).chat_threads.get,
+              appendMessages: (opts.component as any).chat_messages.append,
+              listMessages: (opts.component as any).chat_messages.listByThread,
+              createRun: (opts.component as any).chat_runs.create,
+              completeRun: (opts.component as any).chat_runs.complete,
+              failRun: (opts.component as any).chat_runs.fail,
+            },
+          ),
+          chat: { enabled: false },
+        } as any,
+      });
+
+      const messages = await runtime.listMessages(threadId);
+      return json(messages, corsOrigin);
+    }),
+  });
+
+  http.route({
+    path: "/api/devtools/chat/threads",
+    method: "GET",
+    handler: withAuth(async ({ runQuery, runMutation, req }) => {
+      const url = new URL(req.url);
+      const userId = url.searchParams.get("userId");
+      const limitRaw = url.searchParams.get("limit");
+      const limit = limitRaw ? Number(limitRaw) : 50;
+
+      const runtime = createChatRuntime({
+        config: {
+          recommendation: { hard: {} as any, soft: "" },
+          llm: {},
+          storage: createConvexStorageAdapter(
+            { runQuery, runMutation },
+            {
+              get: (opts.component as any)._storage.get,
+              set: (opts.component as any)._storage.set,
+              delete: (opts.component as any)._storage.delete_,
+              list: (opts.component as any)._storage.list,
+            },
+          ),
+          chatRepository: createConvexChatRepository(
+            { runQuery, runMutation },
+            {
+              createThread: (opts.component as any).chat_threads.create,
+              getThread: (opts.component as any).chat_threads.get,
+              listThreads: (opts.component as any).chat_threads.list,
+              appendMessages: (opts.component as any).chat_messages.append,
+              listMessages: (opts.component as any).chat_messages.listByThread,
+              createRun: (opts.component as any).chat_runs.create,
+              completeRun: (opts.component as any).chat_runs.complete,
+              failRun: (opts.component as any).chat_runs.fail,
+            },
+          ),
+          chat: { enabled: false },
+        } as any,
+      });
+
+      const threads = await runtime.listThreads({
+        userId: userId ?? undefined,
+        limit: Number.isFinite(limit) ? limit : 50,
+      });
+      return json(threads, corsOrigin);
+    }),
+  });
+
+  http.route({
+    path: "/api/devtools/chat/respond",
+    method: "POST",
+    handler: withAuth(async ({ runQuery, runMutation, runAction, req }) => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const send = (data: unknown) => {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+          };
+
+          void (async () => {
+            try {
+              const body = (await req.json().catch(() => ({}))) as {
+                threadId?: string;
+                userId?: string;
+                title?: string;
+                message?: string;
+                metadata?: Record<string, unknown>;
+              };
+
+              const message = body.message?.trim();
+              if (!message) {
+                send({ type: "error", error: "Missing message" });
+                controller.close();
+                return;
+              }
+
+              const settings = safeJsonParse<DevtoolsSettings>(
+                await readKv(runQuery, settingsKey),
+                resolveDefaultSettings(),
+              );
+              const apiKey = resolveGeminiApiKey();
+              if (!apiKey) {
+                send({ type: "error", error: "Missing Gemini API key" });
+                controller.close();
+                return;
+              }
+
+              const toolDefs =
+                typeof opts.chat?.createTools === "function"
+                  ? await opts.chat.createTools({ settings, req })
+                  : (opts.chat?.createTools ?? []);
+
+              const runtime = createChatRuntime({
+                config: {
+                  recommendation: { hard: {} as any, soft: "" },
+                  llm: {
+                    chat: gemini(settings.models.chat, { apiKey }),
+                  },
+                  storage: createConvexStorageAdapter(
+                    { runQuery, runMutation },
+                    {
+                      get: (opts.component as any)._storage.get,
+                      set: (opts.component as any)._storage.set,
+                      delete: (opts.component as any)._storage.delete_,
+                      list: (opts.component as any)._storage.list,
+                    },
+                  ),
+                  chatRepository: createConvexChatRepository(
+                    { runQuery, runMutation },
+                    {
+                      createThread: (opts.component as any).chat_threads.create,
+                      getThread: (opts.component as any).chat_threads.get,
+                      listThreads: (opts.component as any).chat_threads.list,
+                      appendMessages: (opts.component as any).chat_messages.append,
+                      listMessages: (opts.component as any).chat_messages.listByThread,
+                      createRun: (opts.component as any).chat_runs.create,
+                      completeRun: (opts.component as any).chat_runs.complete,
+                      failRun: (opts.component as any).chat_runs.fail,
+                    },
+                  ),
+                  chatTools: buildConvexTools({ runQuery, runMutation, runAction }, toolDefs),
+                  chat: {
+                    enabled: true,
+                    systemPrompt:
+                      typeof opts.chat?.systemPrompt === "function"
+                        ? opts.chat.systemPrompt({ settings })
+                        : (opts.chat?.systemPrompt ?? settings.prompts.chat),
+                    platformContext:
+                      typeof opts.chat?.platformContext === "function"
+                        ? opts.chat.platformContext({ settings })
+                        : opts.chat?.platformContext,
+                    toolPolicy: opts.chat?.toolPolicy ?? "snapshot-first",
+                  },
+                } as any,
+              });
+
+              let threadId = body.threadId;
+              if (!threadId) {
+                const thread = await runtime.createThread({
+                  userId: body.userId ?? opts.defaultUserId,
+                  title: body.title ?? "Devtools chat",
+                  metadata: {
+                    source: "devtools-http",
+                    ...(body.metadata ?? {}),
+                  },
+                });
+                threadId = thread.id;
+              }
+
+              const result = await runtime.respond({
+                threadId,
+                userId: body.userId ?? opts.defaultUserId,
+                message,
+                metadata: body.metadata,
+                onTextDelta: async (textDelta: string) => {
+                  send({ type: "text-delta", text: textDelta });
+                },
+                onToolEvent: async (event: any) => {
+                  send({ type: "tool-event", ...event });
+                },
+              } as any);
+              send({
+                type: "meta",
+                threadId: result.threadId,
+                runId: result.runId,
+              });
+              await readTextStream(result.stream);
+              send({
+                type: "done",
+                threadId: result.threadId,
+                runId: result.runId,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+              send({ type: "error", error: message });
+            } finally {
+              controller.close();
+            }
+          })();
         },
       });
 
